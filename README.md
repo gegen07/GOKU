@@ -15,6 +15,7 @@ conda activate goku
 
 # Install dependencies
 pip install -r requirements.txt
+pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.4.1+cu121.html
 
 # Alternatively, if you have a environment.yml file
 # conda env update -f environment.yml

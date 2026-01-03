@@ -11,6 +11,7 @@ import pandas as pd
 from hyperparams import get_args_from_input
 from preprocessing import rewiring, sdrf, fosr, borf, goku_rewiring, delaunay_rewiring, laser_rewiring
 from preprocessing.gtr import PrecomputeGTREdges, AddPrecomputedGTREdges, AddGTREdges
+from main_fnsd import get_fake_args
 
 
 
@@ -127,6 +128,8 @@ for key in datasets:
         dataset.data = rewiring_transform(dataset.data)
     elif args.rewiring == 'laser':
         dataset.data.edge_index = laser_rewiring.laser(dataset.data.edge_index, p=0.15, max_k=3).long()
+    elif args.rewiring == 'none':
+        pass
 
 
     end = time.time()
@@ -138,6 +141,8 @@ for key in datasets:
         print(f"TRIAL #{trial+1}")
         test_accs = []
         for i in range(args.num_splits):
+            # fnsd_args = get_fake_args(depth=2, num_layers=2, loader_workers=7,
+            #                       no_activation=True, no_residual=True, no_layer_norm=False)
             train_acc, validation_acc, test_acc = Experiment(args=args, dataset=dataset).run()
             test_accs.append(test_acc)
         test_acc = max(test_accs)

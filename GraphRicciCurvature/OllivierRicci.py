@@ -481,7 +481,15 @@ def _compute_ricci_curvature_edges(G: nx.Graph, weight="weight", edge_list=[],
                 chunksize = 1
 
         # Compute Ricci curvature for edges
-        result = pool.imap_unordered(_wrap_compute_single_edge, args, chunksize=chunksize)
+        result_iter = pool.imap_unordered(_wrap_compute_single_edge, args, chunksize=chunksize)
+
+        # Collect results from iterator into a single mapping { (u,v): {..attr..}, ... }
+        edge_results = {}
+        for res in result_iter:
+            # each res is a dict like {(u,v): {...}}
+            if isinstance(res, dict):
+                edge_results.update(res)
+
         pool.close()
         pool.join()
 
@@ -489,7 +497,7 @@ def _compute_ricci_curvature_edges(G: nx.Graph, weight="weight", edge_list=[],
 
     logger.info("%8f secs for Ricci curvature computation." % (time.time() - t0))
 
-    return output
+    return edge_results
 
 
 def _compute_ricci_curvature(G: nx.Graph, weight="weight", **kwargs):

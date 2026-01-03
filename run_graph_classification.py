@@ -12,6 +12,9 @@ from hyperparams import get_args_from_input
 from preprocessing import rewiring, sdrf, fosr, digl, borf, goku_rewiring, delaunay_rewiring, laser_rewiring
 from preprocessing.gtr import PrecomputeGTREdges, AddPrecomputedGTREdges, AddGTREdges
 
+from models.node_model import GCN, FNSD
+from main_fnsd import get_fake_args
+
 
 def calculate_average_spectral_gap(dataset):
     """
@@ -50,9 +53,9 @@ default_args = AttrDict({
     "num_layers": 4,
     "hidden_dim": 64,
     "learning_rate": 1e-3,
-    "layer_type": "GCN",
+    "layer_type": "FNSD",
     "display": True,
-    "num_trials": 100,
+    "num_trials": 10,
     "eval_every": 1,
     "rewiring": "goku",
     "num_iterations": 10,
@@ -251,6 +254,8 @@ for dataset_name in datasets:
                 ).long()
                 dataset[i].edge_type = torch.zeros_like(dataset[i].edge_index[0], dtype=torch.int64)
                 progress_bar.update(1)
+        elif args.rewiring == 'none':
+            pass
                 
     end_time = time.time()
     rewiring_duration = end_time - start_time
@@ -261,11 +266,15 @@ for dataset_name in datasets:
     start_time = time.time()
     
     for trial in range(args.num_trials):
-        train_acc, validation_acc, test_acc, energy = Experiment(args=args, dataset=dataset).run()
+        fnsd_args = get_fake_args(depth=2, num_layers=2, loader_workers=7,
+                                  no_activation=True, no_residual=True, no_layer_norm=False)
+        print(fnsd_args)
+        train_acc, validation_acc, test_acc = Experiment(args=fnsd_args, dataset=dataset).run()
+        # train_acc, validation_acc, test_acc, energy = Experiment(args=args, dataset=dataset).run()
         train_accuracies.append(train_acc)
         validation_accuracies.append(validation_acc)
         test_accuracies.append(test_acc)
-        energies.append(energy)
+        # energies.append(energy)
         
     end_time = time.time()
     run_duration = end_time - start_time
@@ -274,13 +283,13 @@ for dataset_name in datasets:
     train_mean = 100 * np.mean(train_accuracies)
     val_mean = 100 * np.mean(validation_accuracies)
     test_mean = 100 * np.mean(test_accuracies)
-    energy_mean = 100 * np.mean(energies)
+    # energy_mean = 100 * np.mean(energies)
     
     # Calculate confidence intervals (95%)
     train_ci = 2 * np.std(train_accuracies)/(args.num_trials ** 0.5)
     val_ci = 2 * np.std(validation_accuracies)/(args.num_trials ** 0.5)
     test_ci = 2 * np.std(test_accuracies)/(args.num_trials ** 0.5)
-    energy_ci = 200 * np.std(energies)/(args.num_trials ** 0.5)
+    # energy_ci = 200 * np.std(energies)/(args.num_trials ** 0.5)
     
     # Log results
     # log_to_file(f"RESULTS FOR {dataset_name} ({args.rewiring}):\n")
@@ -304,8 +313,8 @@ for dataset_name in datasets:
         "val_ci": val_ci,
         "train_mean": train_mean,
         "train_ci": train_ci,
-        "energy_mean": energy_mean,
-        "energy_ci": energy_ci,
+        # "energy_mean": energy_mean,
+        # "energy_ci": energy_ci,
         "last_layer_fa": args.last_layer_fa,
         "rewiring_duration": rewiring_duration,
         "run_duration": run_duration,

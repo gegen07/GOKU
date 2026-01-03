@@ -7,7 +7,8 @@ from torch.utils.data import random_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from math import inf
 
-from models.node_model import GCN
+from models.node_model import GCN, FNSD
+import random
 
 default_args = AttrDict(
     {"learning_rate": 1e-3,
@@ -49,7 +50,35 @@ class Experiment:
         if self.args.hidden_layers is None:
             self.args.hidden_layers = [self.args.hidden_dim] * self.args.num_layers
 
-        self.model = GCN(self.args).to(self.args.device)
+        if self.args.layer_type == "FNSD":
+            gnn_type = args.type
+            self.depth = args.depth
+            num_layers = self.depth if args.num_layers is None else args.num_layers
+            self.dim = args.dim
+            self.unroll = args.unroll
+            self.train_fraction = args.train_fraction
+            self.max_epochs = args.max_epochs
+            self.batch_size = args.batch_size
+            self.accum_grad = args.accum_grad
+            self.eval_every = args.eval_every
+            self.loader_workers = args.loader_workers
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.patience = args.patience
+
+            seed = 11
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            random.seed(seed)
+
+            self.model = FNSD(self.args, gnn_type=gnn_type, num_layers=num_layers, dim0=self.args.input_dim, h_dim=self.dim, out_dim=self.args.output_dim,
+                                last_layer_fully_adjacent=args.last_layer_fully_adjacent, unroll=args.unroll,
+                                layer_norm=not args.no_layer_norm,
+                                use_activation=not args.no_activation,
+                                use_residual=not args.no_residual
+                                )
+            self.model = self.model.to(self.device)
+        else:
+            self.model = GCN(self.args).to(self.args.device)
 
         if self.test_mask is None:
             node_indices = list(range(self.num_nodes))
@@ -134,10 +163,14 @@ class Experiment:
                 if self.args.display:
                     print(f'Epoch {epoch}, Train acc: {train_acc}, Validation acc: {validation_acc}{new_best_str}, Test acc: {test_acc}')
                 if epochs_no_improve > self.args.patience:
+                    print('eu')
                     if self.args.display:
                         print(f'{self.args.patience} epochs without improvement, stopping training')
                         print(f'Best train acc: {best_train_acc}, Best validation loss: {best_validation_acc}, Best test loss: {best_test_acc}')
+                    print(train_acc, validation_acc, test_acc)
                     return train_acc, validation_acc, test_acc
+        return train_acc, validation_acc, test_acc
+
 
     def eval(self, batch, mask):
         self.model.eval()

@@ -1,8 +1,16 @@
+from enum import Enum, auto
+
 from torch.nn import ModuleList, Dropout, ReLU
 from torch_geometric.nn import GCNConv, RGCNConv, SAGEConv, FiLMConv, global_mean_pool, GATConv
+from torch_geometric.nn import GCNConv, GatedGraphConv, GINConv, GATConv
+
+from torch_geometric.utils import remove_self_loops
+from torch.nn import functional as F
 
 import torch
 import torch.nn as nn
+
+from .cooperative_sheaves.NSD.nsd_disc_models import DiscreteFlatBundleSheafDiffusion
 
 
 class GINConv(nn.Module):
@@ -88,6 +96,7 @@ class GCN(torch.nn.Module):
             return SAGEConv(in_features, out_features)
         elif self.layer_type == "GAT":
             return GATConv(in_features, out_features)
+
     def reset_parameters(self):
         for layer in self.layers:
             layer.reset_parameters()
@@ -103,3 +112,145 @@ class GCN(torch.nn.Module):
                 x = self.act_fn(x)
                 x = self.dropout(x)
         return x
+
+
+class GNN_TYPE(Enum):
+    GCN = auto()
+    GGNN = auto()
+    GIN = auto()
+    GAT = auto()
+    CSN = auto()
+    ONSD = auto()
+    FNSD = auto()
+    FGNSD = auto()
+
+    @staticmethod
+    def from_string(s):
+        try:
+            return GNN_TYPE[s]
+        except KeyError:
+            raise ValueError()
+
+    def get_layer(self, args, in_dim, out_dim):
+        if self is GNN_TYPE.GCN:
+            return GCNConv(
+                in_channels=in_dim,
+                out_channels=out_dim)
+        elif self is GNN_TYPE.GGNN:
+            return GatedGraphConv(out_channels=out_dim, num_layers=1)
+        elif self is GNN_TYPE.GIN:
+            return GINConv(nn.Sequential(nn.Linear(in_dim, out_dim), nn.BatchNorm1d(out_dim), nn.ReLU(),
+                                         nn.Linear(out_dim, out_dim), nn.BatchNorm1d(out_dim), nn.ReLU()))
+        elif self is GNN_TYPE.GAT:
+            # 4-heads, although the paper by Velickovic et al. had used 6-8 heads.
+            # The output will be the concatenation of the heads, yielding a vector of size out_dim
+            num_heads = 4
+            return GATConv(in_dim, out_dim // num_heads, heads=num_heads)
+        elif self is GNN_TYPE.FNSD:
+            args.input_dim = in_dim
+            args.output_dim = out_dim
+            return DiscreteFlatBundleSheafDiffusion(args)
+
+class FNSD(torch.nn.Module):
+    def __init__(self, args, gnn_type, num_layers, dim0, h_dim, out_dim, last_layer_fully_adjacent,
+                 unroll, layer_norm, use_activation, use_residual):
+        super(FNSD, self).__init__()
+        self.gnn_type = getattr(GNN_TYPE, gnn_type) if type(gnn_type) is str else gnn_type
+        self.unroll = unroll
+        self.last_layer_fully_adjacent = last_layer_fully_adjacent
+        self.use_layer_norm = layer_norm
+        self.use_activation = use_activation
+        self.use_residual = use_residual
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        args.device = self.device
+
+        self.num_layers = num_layers
+        self.layer0_keys = nn.Embedding(num_embeddings=dim0 + 1, embedding_dim=h_dim*args.d)
+        self.layer0_values = nn.Embedding(num_embeddings=dim0 + 1, embedding_dim=h_dim*args.d)
+        self.layers = nn.ModuleList()
+        self.layer_norms = nn.ModuleList()
+
+        #self.lin1 = nn.Linear(h_dim, 32 * 2)
+        #self.lin2 = nn.Linear(32 * 2, h_dim)
+
+        if unroll:
+            self.layers.append(self.gnn_type.get_layer(args,
+                in_dim=h_dim,
+                out_dim=h_dim))
+        else:
+            for i in range(num_layers):
+                self.layers.append(self.gnn_type.get_layer(args,
+                    in_dim=h_dim,
+                    out_dim=h_dim))
+        if self.use_layer_norm:
+            for i in range(num_layers):
+                self.layer_norms.append(nn.LayerNorm(h_dim*args.d))
+
+        self.out_dim = out_dim
+        # self.out_layer = nn.Linear(in_features=h_dim, out_features=out_dim, bias=False)
+        self.out_layer = nn.Linear(in_features=h_dim*args.d, out_features=out_dim + 1, bias=False)
+
+    def forward(self, data, reff=False):
+        x, edge_index, batch, roots = data.x, data.edge_index, data.batch, data.root_mask
+
+        x_key, x_val = x[:, 0], x[:, 1]
+        x_key_embed = self.layer0_keys(x_key)
+        x_val_embed = self.layer0_values(x_val)
+        x = x_key_embed + x_val_embed
+
+        get_layer_reff = [False] * self.num_layers
+        if reff:
+            get_layer_reff[-1] = True
+
+
+        reff_per_layer = torch.zeros((self.num_layers,), device=self.device)
+        for i in range(self.num_layers):
+            if self.unroll:
+                layer = self.layers[0]
+            else:
+                layer = self.layers[i]
+            new_x = x
+            if self.last_layer_fully_adjacent and i == self.num_layers - 1:
+                root_indices = torch.nonzero(roots, as_tuple=False).squeeze(-1)
+                target_roots = root_indices.index_select(dim=0, index=batch)
+                source_nodes = torch.arange(0, data.num_nodes).to(self.device)
+                edges = torch.stack([source_nodes, target_roots], dim=0)
+
+            else:
+                edges = edge_index
+
+            #full_edges = torch.cat([edges, edges.flip(0)], dim=1).unique(dim=1)
+            #edges = full_edges
+            #edges = remove_self_loops(edges)[0]
+
+            if 'Discrete' in layer.__class__.__name__ and 'Flat' not in layer.__class__.__name__:
+                layer.get_edge_dependend_stuff(edges, new_x)
+            # else:
+            #     layer.compute_maps_idx(edges)
+            #layer.to(new_x.device)
+
+            if 'Flat' in layer.__class__.__name__:
+                edges = remove_self_loops(edges)[0]
+                new_x, reff_values = layer(new_x, edges, data, reff=get_layer_reff[i])
+                reff_sum, mean_reff, std_reff = reff_values
+                reff_per_layer[i] = reff_sum
+            elif 'RGCN' in layer.__class__.__name__:
+                new_x = layer(new_x, edges, edge_type=data.edge_type)
+            else:
+                new_x = layer(new_x, edges)
+                
+            if self.use_activation:
+                new_x = F.relu(new_x)
+            if self.use_residual:
+                x = x + new_x
+            else:
+                x = new_x
+            if self.use_layer_norm:
+                x = self.layer_norms[i](x)
+
+        root_nodes = x[roots]
+        logits = self.out_layer(root_nodes)
+        # logits = F.linear(root_nodes, self.layer0_values.weight)
+        if reff:
+            return logits, reff_per_layer
+        return logits

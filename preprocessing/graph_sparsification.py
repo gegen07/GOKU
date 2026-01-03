@@ -283,7 +283,7 @@ def compute_effective_resistance(edge_list, weights, epsilon, method='kts', tol=
         # Solve for each projection
         for i in prange(int(scale)):
             SYSr = SYS[i, :].toarray()
-            Z[i, :] = cg(laplacian, SYSr.transpose(), tol=tol, M=M)[0]
+            Z[i, :] = cg(laplacian, SYSr.transpose(), rtol=tol, M=M)[0]
 
         # Calculate effective resistance using projection results
         effective_resistance = np.sum(np.square(Z[:, edge_list[:, 0]] - Z[:, edge_list[:, 1]]), axis=0)
@@ -304,7 +304,7 @@ def compute_effective_resistance(edge_list, weights, epsilon, method='kts', tol=
             # Create and solve the system
             b = ons @ weight_matrix @ incidence_matrix
             b = b.toarray()
-            Z = sparse.linalg.cg(laplacian, b.transpose(), tol=tol, M=M)[0]
+            Z = sparse.linalg.cg(laplacian, b.transpose(), rtol=tol, M=M)[0]
             Z = Z.transpose()
 
             # Accumulate squared differences across edges

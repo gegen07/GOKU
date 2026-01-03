@@ -38,24 +38,36 @@ def add_edges_with_fiedler(edge_index, fiedler_vector, num_nodes, num_edges_to_a
     # Filter out existing edges between promising nodes
     existing_edges = set(zip(edge_index[0].tolist(), edge_index[1].tolist()))
     promising_pairs = torch.combinations(promising_nodes, r=2)
-    mask = torch.tensor([(u.item(), v.item()) not in existing_edges for u, v in promising_pairs],
-                       device=edge_index.device)
+    mask_list = [(u.item(), v.item()) not in existing_edges for u, v in promising_pairs]
+    if mask_list:
+        mask = torch.tensor(mask_list, device=promising_pairs.device, dtype=torch.bool)
+        # Keep only promising pairs that are not already connected
+        promising_pairs = promising_pairs[mask]
+    else:
+        promising_pairs = promising_pairs.new_empty((0, 2), dtype=promising_pairs.dtype)
 
-    # Keep only promising pairs that are not already connected
-    promising_pairs = promising_pairs[mask]
+    # If there are no promising pairs, fallback to degree-based addition
+    if promising_pairs.numel() == 0:
+        return add_edges_by_degrees(edge_index, num_nodes, num_edges_to_add)
 
-    # Iteratively add edges
-    for _ in range(num_edges_to_add):
+    # Iteratively add edges (cap to available promising pairs)
+    max_iters = min(num_edges_to_add, promising_pairs.shape[0])
+    for _ in range(max_iters):
         # Compute scores for edges between all promising nodes
         u, v = promising_pairs[:, 0], promising_pairs[:, 1]
-        score = torch.abs(fiedler_vector[u] - fiedler_vector[v])/(degrees[u] + degrees[v] + 1)
+        score = torch.abs(fiedler_vector[u] - fiedler_vector[v]) / (degrees[u] + degrees[v] + 1)
+
+        # If score is empty for any reason, break and fallback
+        if score.numel() == 0:
+            break
 
         # Find the pair with the maximum score
-        max_idx = torch.argmax(score)
-        node_u, node_v = u[max_idx], v[max_idx]
+        max_idx = int(torch.argmax(score).item())
+        node_u, node_v = promising_pairs[max_idx, 0], promising_pairs[max_idx, 1]
 
         # Add the edge (node_u, node_v) to edge_index
-        new_edge = torch.tensor([[node_u], [node_v]], device=edge_index.device)
+        new_edge = torch.tensor([[int(node_u.item())], [int(node_v.item())]],
+                                device=edge_index.device, dtype=edge_index.dtype)
         edge_index = torch.cat([edge_index, new_edge], dim=1)
 
         # Update the degrees of node_u and node_v
@@ -63,7 +75,15 @@ def add_edges_with_fiedler(edge_index, fiedler_vector, num_nodes, num_edges_to_a
         degrees[node_v] += 1
 
         # Remove the selected pair from the list of promising pairs
-        promising_pairs = torch.cat([promising_pairs[:max_idx], promising_pairs[max_idx + 1:]])
+        if promising_pairs.shape[0] == 1:
+            promising_pairs = promising_pairs.new_empty((0, 2), dtype=promising_pairs.dtype)
+        else:
+            promising_pairs = torch.cat([promising_pairs[:max_idx], promising_pairs[max_idx + 1:]], dim=0)
+
+    # If we still need to add more edges (not enough promising pairs), fallback to degree-based method
+    remaining = num_edges_to_add - max_iters
+    if remaining > 0:
+        edge_index = add_edges_by_degrees(edge_index, num_nodes, remaining)
 
     return edge_index
 
